@@ -87,15 +87,34 @@ def is_user_in_timeout(user_id):
         return False, 0
     return True, remaining_seconds
 
-def send_message(chat_id, text, parse_mode="HTML"):
+def send_message(chat_id, text, parse_mode="HTML", reply_markup=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     requests.post(url, json=payload)
 
 def delete_message(chat_id, message_id):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage"
     payload = {"chat_id": chat_id, "message_id": message_id}
     requests.post(url, json=payload)
+
+def main_keyboard():
+    """لوحة مفاتيح دائمة مع زرين"""
+    return {
+        "keyboard": [
+            [{"text": "إنشاء حساب القط🐱"}, {"text": "تحميل تطبيق القط📱"}]
+        ],
+        "resize_keyboard": True
+    }
+
+def download_inline_keyboard():
+    """زر inline لرابط التحميل"""
+    return {
+        "inline_keyboard": [
+            [{"text": "📥 تحميل التطبيق", "url": "https://t.me/aynhttpx/26"}]
+        ]
+    }
 
 @app.route('/')
 def home():
@@ -118,7 +137,20 @@ def webhook():
                 return {"ok": True}
             
             if text == "/start":
-                send_message(chat_id, "أهلاً بك! اكتب: إنشاء حساب القط🐱")
+                send_message(
+                    chat_id, 
+                    "أهلاً بك! اضغط الزر أدناه لإنشاء حسابك ⬇️",
+                    reply_markup=main_keyboard()
+                )
+                return {"ok": True}
+            
+            if text == "تحميل تطبيق القط📱":
+                send_message(
+                    chat_id,
+                    "📱 <b>تطبيق القط متاح الآن!</b>\n\n"
+                    "اضغط الزر أدناه لتحميل التطبيق ⬇️",
+                    reply_markup=download_inline_keyboard()
+                )
                 return {"ok": True}
             
             if text == "إنشاء حساب القط🐱":
@@ -156,4 +188,10 @@ def webhook():
         return {"ok": False}
 
 if __name__ == "__main__":
+    # تعيين الـ webhook
+    webhook_url = f"https://YOUR_DOMAIN/{BOT_TOKEN}"
+    set_webhook = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url={webhook_url}"
+    print(f"Setting webhook to: {webhook_url}")
+    print(requests.get(set_webhook).json())
+    
     app.run(host='0.0.0.0', port=8080)
