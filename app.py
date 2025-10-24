@@ -4,7 +4,7 @@ from flask import Flask, request
 import requests, time
 from datetime import datetime, timedelta
 
-BOT_TOKEN   = "8365239927:AAHi945VJbQh6vDrSwGUotVg2CN9VqNLkDA"
+BOT_TOKEN   = "8288789847:AAHSGOPiKHtZU1b3qpfoz5h4ByeUTco0gv8"
 CHANNEL_ID  = -1002479732983
 CHANNEL_USER= "@aynHTTPXCHAT"
 
