@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MeowSSH Bot - Flask Webhook Version
-- Anti-Spam: 30 ثانية بين كل ضغطة
-- Timeout: 30 ثانية عند الضغط المتكرر
-- 3 ساعات بين كل حساب SSH جديد
-- زر تحميل التطبيق
-- حذف تلقائي للرسائل التحذيرية
+MeowSSH Bot - Lightweight Version with Reply Feature
+- Optimized for 0.1 CPU / 512MB RAM
+- Reply to user message for easy tracking
+- Auto cleanup old data
 """
 
 from flask import Flask, request
-import requests, time, threading
+import requests, time
 from datetime import datetime, timedelta
 
 BOT_TOKEN   = "8288789847:AAHSGOPiKHtZU1b3qpfoz5h4ByeUTco0gv8"
@@ -19,296 +17,256 @@ CHANNEL_USER= "@aynHTTPXCHAT"
 
 app = Flask(__name__)
 
-# قواميس عالمية
-last_account_time = {}   # آخر وقت حصل فيه المستخدم على حساب حقيقي
-user_data = {}           # بيانات آخر حساب للمستخدم
-last_click_time = {}     # آخر وقت ضغط فيه المستخدم (للـ anti-spam)
-user_timeout = {}        # المستخدمين المحظورين مؤقتاً
+# قواميس خفيفة - تُنظف تلقائياً
+user_accounts = {}  # {user_id: {"time": datetime, "data": {...}}}
+user_clicks = {}    # {user_id: timestamp}
+user_blocks = {}    # {user_id: datetime}
 
-# === إنشاء حساب SSH جديد ===
+# إعدادات
+MAX_USERS_IN_MEMORY = 100  # أقصى عدد مستخدمين محفوظين
+CLEANUP_INTERVAL = 50      # تنظيف كل 50 طلب
+request_counter = 0
+
+# === تنظيف الذاكرة تلقائياً ===
+def cleanup_old_data():
+    """حذف البيانات القديمة لتوفير الذاكرة"""
+    global user_accounts, user_clicks, user_blocks
+    
+    now = datetime.now()
+    
+    # حذف الحسابات القديمة (أكثر من 3 ساعات)
+    old_accounts = [uid for uid, data in user_accounts.items() 
+                    if (now - data["time"]).total_seconds() > 10800]
+    for uid in old_accounts:
+        del user_accounts[uid]
+    
+    # حذف الضغطات القديمة (أكثر من دقيقة)
+    old_clicks = [uid for uid, t in user_clicks.items() 
+                  if time.time() - t > 60]
+    for uid in old_clicks:
+        del user_clicks[uid]
+    
+    # حذف الحظر المنتهي
+    old_blocks = [uid for uid, dt in user_blocks.items() 
+                  if (now - dt).total_seconds() > 30]
+    for uid in old_blocks:
+        del user_blocks[uid]
+    
+    # إذا تجاوز الحد، احذف الأقدم
+    if len(user_accounts) > MAX_USERS_IN_MEMORY:
+        sorted_users = sorted(user_accounts.items(), 
+                            key=lambda x: x[1]["time"])
+        for uid, _ in sorted_users[:20]:
+            del user_accounts[uid]
+
+# === إنشاء حساب SSH ===
 def create_ssh():
-    """إنشاء حساب SSH من API"""
+    """إنشاء حساب SSH - optimized"""
     url = "https://painel.meowssh.shop:5000/test_ssh_public"
     hdr = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "User-Agent": "Mozilla/5.0",
         "Accept": "application/json",
-        "Content-Type": "application/json",
-        "Origin": "https://painel.meowssh.shop",
-        "Referer": "https://painel.meowssh.shop/"
+        "Content-Type": "application/json"
     }
-    r = requests.post(url, headers=hdr, json={"store_owner_id": 1}, timeout=15)
+    r = requests.post(url, headers=hdr, json={"store_owner_id": 1}, timeout=8)
     r.raise_for_status()
     d = r.json()
     
-    # ترجمة المدة إلى العربية
-    valid_ar = d['Expiracao'].replace("hora(s)", "ساعات").replace("horas", "ساعات").replace("hora", "ساعة")
-    
     return {
-        "user": d['Usuario'],
-        "pass": d['Senha'],
-        "limit": d['limite'],
-        "valid": valid_ar,
-        "time": datetime.now().strftime('%H:%M')
+        "u": d['Usuario'],
+        "p": d['Senha'],
+        "l": d['limite'],
+        "v": d['Expiracao'].replace("hora(s)", "ساعات").replace("horas", "ساعات").replace("hora", "ساعة"),
+        "t": datetime.now().strftime('%H:%M')
     }
 
-# === تنسيق رسائل الحساب ===
-def format_real(data):
-    """تنسيق رسالة الحساب الحقيقي"""
-    return (
-        f"🐱 <b>تم إنشاء حساب القط!</b>  -  {data['time']}\n\n"
-        f"👤 <b>اسم المستخدم:</b> <code>{data['user']}</code>\n"
-        f"🔑 <b>كلمة المرور:</b> <code>{data['pass']}</code>\n"
-        f"📊 <b>الحد الأقصى:</b> {data['limit']}\n"
-        f"⏳ <b>مدة الصلاحية:</b> {data['valid']}"
-    )
-
-def fake_account_text(remaining_seconds, user_id):
-    """رسالة الحساب المزيف (نفس البيانات القديمة مع وقت متبقي)"""
-    if user_id not in user_data:
-        return "❌ لا يوجد حساب سابق."
-    
-    data = user_data[user_id]
-    hours, rem = divmod(remaining_seconds, 3600)
-    mins, _ = divmod(rem, 60)
-    valid_fake = f"{hours} ساعة و {mins} دقيقة"
-    
-    return (
-        f"🐱 <b>تم إنشاء حساب القط!</b>  -  {data['time']}\n\n"
-        f"👤 <b>اسم المستخدم:</b> <code>{data['user']}</code>\n"
-        f"🔑 <b>كلمة المرور:</b> <code>{data['pass']}</code>\n"
-        f"📊 <b>الحد الأقصى:</b> {data['limit']}\n"
-        f"⏳ <b>مدة الصلاحية:</b> {valid_fake}"
-    )
-
-# === فحص القيود الزمنية ===
-def can_get_account(user_id):
-    """فحص إذا مر 3 ساعات على آخر حساب حقيقي"""
-    if user_id not in last_account_time:
-        return True, 0
-    
-    elapsed = datetime.now() - last_account_time[user_id]
-    remaining_seconds = 3 * 3600 - int(elapsed.total_seconds())
-    
-    if remaining_seconds <= 0:
-        return True, 0
-    
-    return False, remaining_seconds
-
-def can_click_again(user_id):
-    """فحص إذا مر 30 ثانية على آخر ضغطة (anti-spam)"""
-    if user_id not in last_click_time:
-        return True, 0
-    
-    elapsed = time.time() - last_click_time[user_id]
-    remaining = 30 - int(elapsed)
-    
-    if remaining <= 0:
-        return True, 0
-    
-    return False, remaining
-
-def is_user_in_timeout(user_id):
-    """فحص إذا كان المستخدم في timeout (30 ثانية)"""
-    if user_id not in user_timeout:
-        return False, 0
-    
-    elapsed = datetime.now() - user_timeout[user_id]
-    remaining_seconds = 30 - int(elapsed.total_seconds())
-    
-    if remaining_seconds <= 0:
-        del user_timeout[user_id]
-        return False, 0
-    
-    return True, remaining_seconds
-
-# === دوال Telegram API ===
-def send_message(chat_id, text, parse_mode="HTML", reply_markup=None):
-    """إرسال رسالة"""
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": parse_mode
-    }
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
-    
-    response = requests.post(url, json=payload)
-    return response.json()
-
-def delete_message(chat_id, message_id):
-    """حذف رسالة"""
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage"
-    payload = {"chat_id": chat_id, "message_id": message_id}
+# === دوال API خفيفة ===
+def send(chat_id, text, markup=None, reply_to=None):
+    """إرسال رسالة - optimized with reply support"""
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+    if markup:
+        payload["reply_markup"] = markup
+    if reply_to:
+        payload["reply_to_message_id"] = reply_to
     try:
-        requests.post(url, json=payload, timeout=5)
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", 
+                     json=payload, timeout=5)
     except:
         pass
 
-def delete_message_after_delay(chat_id, message_id, delay=3):
-    """حذف رسالة بعد فترة زمنية"""
-    def delete_task():
-        time.sleep(delay)
-        delete_message(chat_id, message_id)
-    
-    threading.Thread(target=delete_task, daemon=True).start()
+def delete(chat_id, msg_id):
+    """حذف رسالة - optimized"""
+    try:
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage",
+                     json={"chat_id": chat_id, "message_id": msg_id}, timeout=3)
+    except:
+        pass
 
-# === لوحات المفاتيح ===
-def main_keyboard():
-    """لوحة مفاتيح دائمة مع زرين"""
-    return {
-        "keyboard": [
-            [
-                {"text": "إنشاء حساب القط🐱"},
-                {"text": "تحميل تطبيق القط📱"}
-            ]
-        ],
-        "resize_keyboard": True
-    }
-
-def download_inline_keyboard():
-    """زر inline لرابط التحميل"""
-    return {
-        "inline_keyboard": [
-            [{"text": "📥 تحميل التطبيق", "url": "https://t.me/aynhttpx/26"}]
-        ]
-    }
-
-# === معالجات الرسائل ===
-def handle_start(chat_id):
-    """معالج أمر /start"""
-    send_message(
-        chat_id,
-        "أهلاً بك! اضغط الزر أدناه لإنشاء حسابك ⬇️",
-        reply_markup=main_keyboard()
-    )
-
-def handle_download(chat_id):
-    """معالج زر تحميل التطبيق"""
-    send_message(
-        chat_id,
-        "📱 <b>تطبيق القط متاح الآن!</b>\n\n"
-        "اضغط الزر أدناه لتحميل التطبيق ⬇️",
-        reply_markup=download_inline_keyboard()
-    )
-
-def handle_create_account(chat_id, user_id, message_id):
-    """معالج زر إنشاء حساب القط"""
+# === دوال مساعدة ===
+def time_text(sec):
+    """تحويل ثواني إلى نص"""
+    if sec <= 0:
+        return "0"
+    h = sec // 3600
+    m = (sec % 3600) // 60
+    s = sec % 60
     
-    # === 1. فحص timeout (30 ثانية للمحظورين مؤقتاً) ===
-    in_timeout, timeout_remaining = is_user_in_timeout(user_id)
-    if in_timeout:
-        delete_message(chat_id, message_id)
-        
-        result = send_message(
-            chat_id,
-            f"⏳ يرجى الانتظار {timeout_remaining} ثانية قبل المحاولة مرة أخرى."
-        )
-        
-        # حذف رسالة التحذير بعد 3 ثواني
-        if result.get("ok") and "result" in result:
-            warning_msg_id = result["result"]["message_id"]
-            delete_message_after_delay(chat_id, warning_msg_id, 3)
-        
-        return
-    
-    # === 2. فحص anti-spam (30 ثانية بين كل ضغطة) ===
-    can_click, remain_sec = can_click_again(user_id)
-    if not can_click:
-        # حذف رسالة المستخدم
-        delete_message(chat_id, message_id)
-        
-        # إضافة المستخدم إلى timeout
-        user_timeout[user_id] = datetime.now()
-        
-        # إرسال رسالة تحذير
-        result = send_message(
-            chat_id,
-            f"⏳ تم تقييدك مؤقتاً لمدة 30 ثانية بسبب الضغط المتكرر.\n"
-            f"الوقت المتبقي: {remain_sec} ثانية."
-        )
-        
-        # حذف رسالة التحذير بعد 3 ثواني
-        if result.get("ok") and "result" in result:
-            warning_msg_id = result["result"]["message_id"]
-            delete_message_after_delay(chat_id, warning_msg_id, 3)
-        
-        return
-    
-    # === 3. تسجيل وقت الضغطة ===
-    last_click_time[user_id] = time.time()
-    
-    # === 4. فحص إذا مر 3 ساعات على آخر حساب ===
-    can_get, remaining = can_get_account(user_id)
-    
-    if can_get:
-        # إنشاء حساب جديد حقيقي
-        try:
-            ssh_data = create_ssh()
-            user_data[user_id] = ssh_data
-            last_account_time[user_id] = datetime.now()
-            send_message(chat_id, format_real(ssh_data))
-        except Exception as e:
-            send_message(chat_id, f"⚠️ خطأ في إنشاء الحساب:\n<code>{e}</code>")
+    if h > 0:
+        return f"{h}س {m}د"
+    elif m > 0:
+        return f"{m}د {s}ث"
     else:
-        # إرسال نفس الحساب القديم مع وقت متبقي
-        fake_text = fake_account_text(remaining, user_id)
-        send_message(chat_id, fake_text)
+        return f"{s}ث"
 
-# === مسارات Flask ===
+def can_create(uid):
+    """فحص 3 ساعات"""
+    if uid not in user_accounts:
+        return True, 0
+    
+    elapsed = (datetime.now() - user_accounts[uid]["time"]).total_seconds()
+    remaining = 10800 - int(elapsed)
+    
+    return remaining <= 0, max(0, remaining)
+
+def can_click(uid):
+    """فحص 30 ثانية"""
+    if uid not in user_clicks:
+        return True, 0
+    
+    elapsed = time.time() - user_clicks[uid]
+    remaining = 30 - int(elapsed)
+    
+    return remaining <= 0, max(0, remaining)
+
+def is_blocked(uid):
+    """فحص الحظر"""
+    if uid not in user_blocks:
+        return False, 0
+    
+    elapsed = (datetime.now() - user_blocks[uid]).total_seconds()
+    remaining = 30 - int(elapsed)
+    
+    if remaining <= 0:
+        del user_blocks[uid]
+        return False, 0
+    
+    return True, int(remaining)
+
+# === لوحات مفاتيح ===
+KB = {"keyboard": [[{"text": "إنشاء حساب🐱"}, {"text": "تحميل📱"}]], "resize_keyboard": True}
+DL = {"inline_keyboard": [[{"text": "📥 تحميل", "url": "https://t.me/aynhttpx/26"}]]}
+
+# === معالجات ===
+def h_start(cid):
+    send(cid, "🐱 <b>أهلاً بك!</b>\n\n⏰ حساب مجاني كل 3 ساعات", KB)
+
+def h_dl(cid):
+    send(cid, "📱 <b>تطبيق القط</b>\n\nاضغط للتحميل ⬇️", DL)
+
+def h_create(cid, uid, mid):
+    global request_counter
+    
+    # تنظيف دوري
+    request_counter += 1
+    if request_counter % CLEANUP_INTERVAL == 0:
+        cleanup_old_data()
+    
+    # 1. فحص الحظر
+    blocked, b_time = is_blocked(uid)
+    if blocked:
+        delete(cid, mid)
+        send(cid, f"⏳ <b>محظور مؤقتاً</b>\n\n⏱ الوقت المتبقي: {b_time}ث", reply_to=mid)
+        return
+    
+    # 2. فحص Anti-Spam
+    ok_click, c_time = can_click(uid)
+    if not ok_click:
+        delete(cid, mid)
+        user_blocks[uid] = datetime.now()
+        send(cid, 
+            f"⚠️ <b>ضغط متكرر!</b>\n\n"
+            f"⏳ محظور لـ: 30 ثانية\n"
+            f"⏱ متبقي من الضغطة السابقة: {c_time}ث", 
+            reply_to=mid)
+        return
+    
+    # 3. تسجيل الضغطة
+    user_clicks[uid] = time.time()
+    
+    # 4. فحص 3 ساعات
+    ok_create, a_time = can_create(uid)
+    
+    if ok_create:
+        # ✅ إنشاء حساب جديد
+        try:
+            d = create_ssh()
+            user_accounts[uid] = {"time": datetime.now(), "data": d}
+            
+            send(cid, 
+                f"🐱 <b>تم إنشاء حساب القط!</b> - {d['t']}\n\n"
+                f"👤 <b>اسم المستخدم:</b> <code>{d['u']}</code>\n"
+                f"🔑 <b>كلمة المرور:</b> <code>{d['p']}</code>\n"
+                f"📊 <b>الحد الأقصى:</b> {d['l']}\n"
+                f"⏳ <b>مدة الصلاحية:</b> {d['v']}\n\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"💡 <b>نصيحة:</b> احفظ هذه المعلومات الآن!",
+                reply_to=mid)
+        except Exception as e:
+            send(cid, f"⚠️ <b>خطأ في إنشاء الحساب!</b>\n\nحاول مرة أخرى بعد قليل.", reply_to=mid)
+    else:
+        # ❌ انتظر
+        send(cid, 
+            f"⏰ <b>يجب الانتظار قبل حساب جديد!</b>\n\n"
+            f"⏳ <b>الوقت المتبقي:</b> {time_text(a_time)}\n\n"
+            f"💡 <b>ملاحظة:</b> حساب جديد كل 3 ساعات فقط",
+            reply_to=mid)
+
+# === Flask Routes ===
 @app.route('/')
 def home():
-    """الصفحة الرئيسية"""
-    return "🐱 MeowSSH Bot is running! ✅"
+    return f"✅ Running | Users: {len(user_accounts)} | Clicks: {len(user_clicks)}"
 
 @app.route('/' + BOT_TOKEN, methods=['POST'])
 def webhook():
-    """معالج webhook من Telegram"""
     try:
-        data = request.get_json()
+        d = request.get_json()
+        if not d or "message" not in d:
+            return {"ok": True}
         
-        if "message" in data:
-            message = data["message"]
-            chat_id = message["chat"]["id"]
-            user_id = message["from"]["id"]
-            text = message.get("text", "")
-            message_id = message["message_id"]
-            
-            # === فحص إذا كانت الرسالة من المجموعة الصحيحة ===
-            if chat_id != CHANNEL_ID:
-                send_message(
-                    chat_id,
-                    f"📍 البوت يمكنك استخدامه فقط في المجموعة: {CHANNEL_USER}"
-                )
-                return {"ok": True}
-            
-            # === معالجة الأوامر ===
-            if text == "/start":
-                handle_start(chat_id)
-            
-            elif text == "تحميل تطبيق القط📱":
-                handle_download(chat_id)
-            
-            elif text == "إنشاء حساب القط🐱":
-                handle_create_account(chat_id, user_id, message_id)
+        m = d["message"]
+        cid = m["chat"]["id"]
+        uid = m["from"]["id"]
+        txt = m.get("text", "")
+        mid = m["message_id"]
+        
+        # فحص المجموعة
+        if cid != CHANNEL_ID:
+            send(cid, f"📍 <b>عذراً!</b>\n\nالبوت يعمل فقط في المجموعة:\n{CHANNEL_USER}")
+            return {"ok": True}
+        
+        # المعالجات
+        if txt == "/start":
+            h_start(cid)
+        elif txt == "تحميل📱":
+            h_dl(cid)
+        elif txt == "إنشاء حساب🐱":
+            h_create(cid, uid, mid)
         
         return {"ok": True}
-    
-    except Exception as e:
-        print(f"❌ Error in webhook: {e}")
-        return {"ok": False, "error": str(e)}
+    except:
+        return {"ok": False}
 
-# === تشغيل التطبيق ===
+# === تشغيل ===
 if __name__ == "__main__":
-    print("🤖 MeowSSH Bot - Starting...")
-    print(f"📍 Channel ID: {CHANNEL_ID}")
-    print(f"📍 Channel Username: {CHANNEL_USER}")
-    print("⚙️ Anti-Spam: 30 seconds")
-    print("⚙️ Timeout: 30 seconds")
-    print("⚙️ Account Cooldown: 3 hours")
-    print("=" * 50)
+    print("="*50)
+    print("🐱 MeowSSH Bot - Lightweight Mode + Reply")
+    print("="*50)
+    print(f"💾 Max users in memory: {MAX_USERS_IN_MEMORY}")
+    print(f"🧹 Auto cleanup every: {CLEANUP_INTERVAL} requests")
+    print(f"⚡ Optimized for: 0.1 CPU / 512MB RAM")
+    print(f"💬 Reply feature: Enabled")
+    print("="*50)
+    print(f"\n🔗 Set webhook:")
+    print(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url=YOUR_URL/{BOT_TOKEN}\n")
     
-    # ملاحظة: يجب تعيين الـ webhook يدوياً أو من خلال سكريبت منفصل
-    # مثال: https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url=https://YOUR_DOMAIN/{BOT_TOKEN}
-    
-    app.run(host='0.0.0.0', port=8080)
+    app.run(host='0.0.0.0', port=8080, threaded=False)
