@@ -4,6 +4,7 @@
 MeowSSH Bot - Lightweight Version with Reply Feature
 - Optimized for 0.1 CPU / 512MB RAM
 - Reply to user message for easy tracking
+- Show previous account info when waiting
 - Auto cleanup old data
 """
 
@@ -214,12 +215,29 @@ def h_create(cid, uid, mid):
         except Exception as e:
             send(cid, f"⚠️ <b>خطأ في إنشاء الحساب!</b>\n\nحاول مرة أخرى بعد قليل.", reply_to=mid)
     else:
-        # ❌ انتظر
-        send(cid, 
-            f"⏰ <b>يجب الانتظار قبل حساب جديد!</b>\n\n"
-            f"⏳ <b>الوقت المتبقي:</b> {time_text(a_time)}\n\n"
-            f"💡 <b>ملاحظة:</b> حساب جديد كل 3 ساعات فقط",
-            reply_to=mid)
+        # ❌ انتظر - عرض معلومات الحساب السابق
+        if uid in user_accounts and "data" in user_accounts[uid]:
+            d = user_accounts[uid]["data"]
+            send(cid, 
+                f"⏰ <b>يجب الانتظار قبل حساب جديد!</b>\n\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"📋 <b>حسابك الحالي:</b>\n\n"
+                f"👤 <b>اسم المستخدم:</b> <code>{d['u']}</code>\n"
+                f"🔑 <b>كلمة المرور:</b> <code>{d['p']}</code>\n"
+                f"📊 <b>الحد الأقصى:</b> {d['l']}\n"
+                f"⏳ <b>مدة الصلاحية:</b> {d['v']}\n"
+                f"🕐 <b>تم الإنشاء:</b> {d['t']}\n\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"⏳ <b>الوقت المتبقي:</b> {time_text(a_time)}\n\n"
+                f"💡 <b>ملاحظة:</b> حساب جديد كل 3 ساعات فقط",
+                reply_to=mid)
+        else:
+            # في حالة عدم وجود بيانات (نادر الحدوث)
+            send(cid, 
+                f"⏰ <b>يجب الانتظار قبل حساب جديد!</b>\n\n"
+                f"⏳ <b>الوقت المتبقي:</b> {time_text(a_time)}\n\n"
+                f"💡 <b>ملاحظة:</b> حساب جديد كل 3 ساعات فقط",
+                reply_to=mid)
 
 # === Flask Routes ===
 @app.route('/')
@@ -265,6 +283,7 @@ if __name__ == "__main__":
     print(f"🧹 Auto cleanup every: {CLEANUP_INTERVAL} requests")
     print(f"⚡ Optimized for: 0.1 CPU / 512MB RAM")
     print(f"💬 Reply feature: Enabled")
+    print(f"📋 Show previous account: Enabled")
     print("="*50)
     print(f"\n🔗 Set webhook:")
     print(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url=YOUR_URL/{BOT_TOKEN}\n")
